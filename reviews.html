@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Отзывы - F3hcqcx Stars</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <meta name="telegram-web-app" content="https://your-domain.com/webapp/reviews.html">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #fff;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .rating {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 18px;
+        }
+
+        .stars {
+            color: #ffd700;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            overflow-x: auto;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: #16213e;
+            border: none;
+            color: #fff;
+            border-radius: 20px;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.3s;
+        }
+
+        .tab.active {
+            background: #0f3460;
+        }
+
+        .tab:hover {
+            background: #0f3460;
+        }
+
+        .reviews-container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .review-card {
+            background: #16213e;
+            padding: 15px;
+            border-radius: 10px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .review-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .review-user {
+            font-weight: bold;
+            color: #e94560;
+        }
+
+        .review-date {
+            color: #888;
+            font-size: 12px;
+        }
+
+        .review-stars {
+            color: #ffd700;
+            margin-bottom: 10px;
+        }
+
+        .review-text {
+            line-height: 1.5;
+            color: #ccc;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            color: #888;
+            font-size: 14px;
+            padding: 15px;
+            background: #16213e;
+            border-radius: 10px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #888;
+        }
+
+        .close-btn {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: #e94560;
+            color: white;
+            border: none;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 18px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <button class="close-btn" onclick="window.close()">×</button>
+    
+    <div class="container">
+        <div class="header">
+            <h1>⭐ Отзывы</h1>
+            <div class="rating">
+                <span class="stars">★★★★★</span>
+                <span id="avg-rating">5.0</span>
+                <span id="total-reviews">(266 отзывов)</span>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="filterReviews('all')">Все отзывы</button>
+            <button class="tab" onclick="filterReviews('positive')">Позитивные</button>
+            <button class="tab" onclick="filterReviews('negative')">Негативные</button>
+        </div>
+
+        <div class="reviews-container" id="reviews-container">
+            <div class="loading">Загрузка отзывов...</div>
+        </div>
+
+        <div class="footer">
+            Оставить отзыв могут только покупатели
+        </div>
+    </div>
+
+    <script>
+        // Инициализация Telegram WebApp
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        // Демо данные отзывов
+        const reviews = [
+            {
+                user: "Александр",
+                rating: 5,
+                text: "Заказал 500 звёзд, пришли через 2 минуты. Всё чётко, спасибо!",
+                date: "24 августа 2026"
+            },
+            {
+                user: "Мария",
+                rating: 5,
+                text: "Вторая покупка, как всегда быстро. Рекомендую этот магазин.",
+                date: "23 августа 2026"
+            },
+            {
+                user: "Дмитрий",
+                rating: 4,
+                text: "Всё хорошо, но ждал 5 минут. В целом доволен качеством.",
+                date: "22 августа 2026"
+            },
+            {
+                user: "Елена",
+                rating: 5,
+                text: "Лучший магазин звёзд! Пользуюсь уже 3 месяца, проблем не было.",
+                date: "21 августа 2026"
+            },
+            {
+                user: "Игорь",
+                rating: 5,
+                text: "Заказал 1000 звёзд для канала, всё пришло моментально. Спасибо!",
+                date: "20 августа 2026"
+            },
+            {
+                user: "Ольга",
+                rating: 4,
+                text: "Хороший сервис, цены нормальные. Единственный минус - иногда долго отвечают.",
+                date: "19 августа 2026"
+            },
+            {
+                user: "Сергей",
+                rating: 5,
+                text: "Просто супер! Звёзды пришли моментально, без задержек.",
+                date: "18 августа 2026"
+            },
+            {
+                user: "Анна",
+                rating: 5,
+                text: "TELEGRAM STARS - 100 STARS. Отличный сервис, буду заказывать ещё!",
+                date: "17 августа 2026"
+            }
+        ];
+
+        let currentFilter = 'all';
+
+        function renderReviews(filter) {
+            const container = document.getElementById('reviews-container');
+            container.innerHTML = '';
+
+            let filteredReviews = reviews;
+            if (filter === 'positive') {
+                filteredReviews = reviews.filter(r => r.rating >= 4);
+            } else if (filter === 'negative') {
+                filteredReviews = reviews.filter(r => r.rating < 4);
+            }
+
+            if (filteredReviews.length === 0) {
+                container.innerHTML = '<div class="loading">Отзывов с таким фильтром пока нет</div>';
+                return;
+            }
+
+            filteredReviews.forEach(review => {
+                const card = document.createElement('div');
+                card.className = 'review-card';
+                
+                const stars = '★'.repeat(review.rating) + '☆'.repeat(5 - review.rating);
+                
+                card.innerHTML = `
+                    <div class="review-header">
+                        <span class="review-user">${review.user}</span>
+                        <span class="review-date">${review.date}</span>
+                    </div>
+                    <div class="review-stars">${stars}</div>
+                    <div class="review-text">${review.text}</div>
+                `;
+                
+                container.appendChild(card);
+            });
+
+            // Обновляем статистику
+            const avgRating = (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1);
+            document.getElementById('avg-rating').textContent = avgRating;
+            document.getElementById('total-reviews').textContent = `(${reviews.length} отзывов)`;
+        }
+
+        function filterReviews(filter) {
+            currentFilter = filter;
+            
+            // Обновляем активную вкладку
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            renderReviews(filter);
+        }
+
+        // Инициализация при загрузке
+        document.addEventListener('DOMContentLoaded', () => {
+            renderReviews('all');
+        });
+    </script>
+</body>
+</html>
