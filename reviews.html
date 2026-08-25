@@ -277,65 +277,59 @@
         const tg = window.Telegram.WebApp;
         tg.expand();
 
-        // Демо данные отзывов
-        const reviews = [
-            {
-                user: "Александр",
-                rating: 5,
-                text: "Заказал 500 звёзд, пришли через 2 минуты. Всё чётко, спасибо!",
-                date: "24 августа 2026",
-                product: "Telegram Stars - 500"
-            },
-            {
-                user: "Мария",
-                rating: 5,
-                text: "Вторая покупка, как всегда быстро. Рекомендую этот магазин.",
-                date: "23 августа 2026",
-                product: "Telegram Stars - 1000"
-            },
-            {
-                user: "Дмитрий",
-                rating: 4,
-                text: "Всё хорошо, но ждал 5 минут. В целом доволен качеством.",
-                date: "22 августа 2026",
-                product: "Telegram Stars - 250"
-            },
-            {
-                user: "Елена",
-                rating: 5,
-                text: "Лучший магазин звёзд! Пользуюсь уже 3 месяца, проблем не было.",
-                date: "21 августа 2026",
-                product: "Telegram Stars - 5000"
-            },
-            {
-                user: "Игорь",
-                rating: 5,
-                text: "Заказал 1000 звёзд для канала, всё пришло моментально. Спасибо!",
-                date: "20 августа 2026",
-                product: "Telegram Stars - 1000"
-            },
-            {
-                user: "Ольга",
-                rating: 4,
-                text: "Хороший сервис, цены нормальные. Единственный минус - иногда долго отвечают.",
-                date: "19 августа 2026",
-                product: "Telegram Stars - 150"
-            },
-            {
-                user: "Сергей",
-                rating: 5,
-                text: "Просто супер! Звёзды пришли моментально, без задержек.",
-                date: "18 августа 2026",
-                product: "Telegram Stars - 3000"
-            },
-            {
-                user: "Анна",
-                rating: 5,
-                text: "TELEGRAM STARS - 100 STARS. Отличный сервис, буду заказывать ещё!",
-                date: "17 августа 2026",
-                product: "Telegram Stars - 100"
+        // Загрузка данных из файла
+        let reviews = [];
+        let reviewsStats = { total: 0, average: 0.0, distribution: {5: 0, 4: 0, 3: 0, 2: 0, 1: 0} };
+
+        // Попытка загрузить данные из reviews_data.js
+        try {
+            const response = await fetch('reviews_data.js');
+            const text = await response.text();
+            
+            // Парсим данные из JS файла
+            if (text.includes('const reviewsData =')) {
+                const reviewsMatch = text.match(/const reviewsData = (\[.*?\]);/s);
+                if (reviewsMatch) {
+                    reviews = JSON.parse(reviewsMatch[1]);
+                }
+                
+                const statsMatch = text.match(/const reviewsStats = (\{.*?\});/s);
+                if (statsMatch) {
+                    reviewsStats = JSON.parse(statsMatch[1]);
+                }
             }
-        ];
+        } catch (e) {
+            console.log('Using demo data');
+            // Демо данные если файл не загрузился
+            reviews = [
+                {
+                    user: "Александр",
+                    rating: 5,
+                    text: "Заказал 500 звёзд, пришли через 2 минуты. Всё чётко, спасибо!",
+                    date: "24 августа 2026",
+                    product: "Telegram Stars - 500"
+                },
+                {
+                    user: "Мария",
+                    rating: 5,
+                    text: "Вторая покупка, как всегда быстро. Рекомендую этот магазин.",
+                    date: "23 августа 2026",
+                    product: "Telegram Stars - 1000"
+                },
+                {
+                    user: "Дмитрий",
+                    rating: 4,
+                    text: "Всё хорошо, но ждал 5 минут. В целом доволен качеством.",
+                    date: "22 августа 2026",
+                    product: "Telegram Stars - 250"
+                }
+            ];
+            reviewsStats = {
+                total: reviews.length,
+                average: (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1),
+                distribution: {5: 2, 4: 1, 3: 0, 2: 0, 1: 0}
+            };
+        }
 
         let currentFilter = 'all';
 
@@ -379,10 +373,9 @@
                 container.appendChild(card);
             });
 
-            // Обновляем статистику
-            const avgRating = (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1);
-            document.getElementById('avg-rating').textContent = avgRating;
-            document.getElementById('total-reviews').textContent = `(${reviews.length} отзывов)`;
+            // Обновляем статистику из загруженных данных
+            document.getElementById('avg-rating').textContent = reviewsStats.average;
+            document.getElementById('total-reviews').textContent = `(${reviewsStats.total} отзывов)`;
         }
 
         function filterReviews(filter) {
