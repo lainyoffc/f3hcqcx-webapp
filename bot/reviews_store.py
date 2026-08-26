@@ -32,6 +32,7 @@ def init_db():
                     UNIQUE(source_chat_id, channel_message_id)
                 )
             """)
+            cur.execute("DELETE FROM reviews WHERE id = 'channel-0-1787741758314'")
         conn.commit()
 
 
