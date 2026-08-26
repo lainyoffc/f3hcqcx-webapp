@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram/webhook")
 
-app = FastAPI(title="F3hcqcx Reviews API", version="2.3.1")
+app = FastAPI(title="F3hcqcx Reviews API", version="2.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lainyoffc.github.io"],
@@ -35,6 +35,8 @@ _bot_module = None
 class ReviewCreate(BaseModel):
     rating: int = Field(ge=1, le=5)
     text: str = Field(min_length=5, max_length=500)
+    user_name: str = Field(min_length=2, max_length=50)
+    product: str = Field(min_length=2, max_length=80)
 
 
 def get_bot():
@@ -144,8 +146,6 @@ async def telegram_webhook(request: Request):
     update = telebot.types.Update.de_json(data)
 
     try:
-        # Explicitly dispatch /start so the main menu works even if the
-        # framework dispatcher misses a webhook update.
         if update and update.message:
             incoming_text = (update.message.text or "").strip()
             if incoming_text:
@@ -156,8 +156,6 @@ async def telegram_webhook(request: Request):
                         _bot_module.start_handler(update.message)
                         return {"ok": True, "handled": "start"}
 
-        # Explicitly persist channel posts. This avoids relying on the
-        # dispatcher for the critical review-sync path.
         if update and update.channel_post:
             try:
                 from channel_sync import sync_channel_post
@@ -194,7 +192,8 @@ def create_review(payload: ReviewCreate, request: Request):
     user = verify_telegram_init_data(init_data)
     text = payload.text.strip()
     username = f"@{user['username']}" if user.get("username") else None
-    user_name = user.get("first_name") or user.get("username") or "Клиент"
+    user_name = payload.user_name.strip() or user.get("first_name") or user.get("username") or "Клиент"
+    product = payload.product.strip()
     message_id = int(time.time() * 1000)
     row = upsert_channel_review(
         chat_id=0,
@@ -204,7 +203,7 @@ def create_review(payload: ReviewCreate, request: Request):
         date=time_to_datetime(time.time()),
         username=username,
         user_name=user_name,
-        product="Telegram Stars",
+        product=product,
     )
     return {"ok": True, "review": row}
 
