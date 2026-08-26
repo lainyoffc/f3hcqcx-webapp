@@ -26,11 +26,19 @@
   <section class="card"><div class="tabs"><button class="tab active" data-filter="all">Все</button><button class="tab" data-filter="positive">Позитивные</button><button class="tab" data-filter="negative">Негативные</button></div></section>
   <section class="card"><div class="row" style="justify-content:space-between"><strong>Оставить отзыв</strong><button class="btn btn-primary" id="open-form">Написать</button></div><div class="form" id="form">
     <div><label class="label" for="review-name">Как вас указать</label><input class="field" id="review-name" maxlength="50" placeholder="Например: Лейни"></div>
-    <div><label class="label" for="review-product">Что покупали</label><select class="field select" id="review-product"><option value="Telegram Stars">⭐ Telegram Stars</option><option value="Telegram Gift">🎁 Telegram Gift</option><option value="Другое">🛍️ Другое</option></select></div>
+    <div><label class="label" for="review-product">Что именно покупали</label><select class="field select" id="review-product">
+      <option value="Telegram Stars">⭐ Telegram Stars</option>
+      <option value="Медведь">🧸 Медведь</option>
+      <option value="Сердце">❤️ Сердце</option>
+      <option value="Кольцо">💍 Кольцо</option>
+      <option value="Роза">🌹 Роза</option>
+      <option value="Алмаз">💎 Алмаз</option>
+      <option value="Другое">🎁 Другой подарок</option>
+    </select></div>
     <div><label class="label">Оценка</label><div class="stars-input" id="stars-input"></div></div>
     <textarea class="field" id="review-text" rows="4" maxlength="500" placeholder="Напишите отзыв (5–500 символов)"></textarea>
     <div class="row"><button class="btn btn-primary" id="send">Отправить</button><button class="btn btn-ghost" id="cancel">Отмена</button></div>
-    <div class="small">Имя и тип покупки будут показаны в отзыве. Telegram-аккаунт дополнительно используется для проверки отправки.</div>
+    <div class="small">Имя и конкретный подарок/товар будут показаны вместе с отзывом.</div>
   </div></section>
   <section class="list" id="list"><div class="loading">⏳ Загрузка отзывов…</div></section>
   <section class="card channel-note muted">Отзывы из канала <b>@OtziviF3hcqcx1</b> автоматически появляются здесь после новых публикаций.</section>
@@ -47,7 +55,8 @@ function render(){let items=allReviews;if(currentFilter==='positive')items=items
 function calcStats(items){const total=items.length;const average=total?items.reduce((sum,r)=>sum+Number(r.rating||0),0)/total:0;return{total,average:Math.round(average*10)/10}}
 async function load(){showError('');try{const [sRes,rRes]=await Promise.all([fetch(`${SUPABASE_API}?limit=100&t=${Date.now()}`,{cache:'no-store'}),fetch(`${RENDER_API}/api/reviews?limit=100&t=${Date.now()}`,{cache:'no-store'})]);const sup=sRes.ok?await sRes.json():{reviews:[]};const ren=rRes.ok?await rRes.json():{reviews:[]};const merged=[...(Array.isArray(sup.reviews)?sup.reviews:[]),...(Array.isArray(ren.reviews)?ren.reviews:[])];const byId=new Map();for(const r of merged){if(!r?.id)continue;byId.set(r.id,r)}allReviews=[...byId.values()].sort((a,b)=>new Date(b.date)-new Date(a.date));const s=calcStats(allReviews);document.getElementById('avg').textContent=s.average.toFixed(1);document.getElementById('count').textContent=`${s.total} отзывов`;render()}catch(e){showError('Не удалось загрузить отзывы.');document.getElementById('list').innerHTML='<div class="card empty">Попробуйте обновить страницу позже.</div>'}}
 function initStars(){const box=document.getElementById('stars-input');box.innerHTML='';for(let i=1;i<=5;i++){const b=document.createElement('button');b.type='button';b.className='star-btn'+(i<=selectedRating?' active':'');b.textContent='★';b.onclick=()=>{selectedRating=i;initStars()};box.appendChild(b)}}
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');currentFilter=b.dataset.filter;render()});document.getElementById('refresh').onclick=load;document.getElementById('open-form').onclick=()=>document.getElementById('form').classList.add('show');document.getElementById('cancel').onclick=()=>document.getElementById('form').classList.remove('show');
+function prefillName(){const user=tg?.initDataUnsafe?.user;if(user){const name=user.first_name||user.username||'';if(name&&!document.getElementById('review-name').value)document.getElementById('review-name').value=name}}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');currentFilter=b.dataset.filter;render()});document.getElementById('refresh').onclick=load;document.getElementById('open-form').onclick=()=>{document.getElementById('form').classList.add('show');prefillName()};document.getElementById('cancel').onclick=()=>document.getElementById('form').classList.remove('show');
 document.getElementById('send').onclick=async()=>{showError('');const name=document.getElementById('review-name').value.trim();const product=document.getElementById('review-product').value;const text=document.getElementById('review-text').value.trim();if(name.length<2){showError('Укажите имя от 2 символов.');return}if(text.length<5){showError('Минимум 5 символов.');return}if(!tg?.initData){showError('Откройте отзывы из Telegram-бота.');return}try{const res=await fetch(`${RENDER_API}/api/reviews`,{method:'POST',headers:{'Content-Type':'application/json','X-Telegram-Init-Data':tg.initData},body:JSON.stringify({rating:selectedRating,text,user_name:name,product})});const data=await res.json();if(!res.ok)throw new Error(data.detail||'Ошибка отправки');document.getElementById('review-name').value='';document.getElementById('review-text').value='';document.getElementById('form').classList.remove('show');await load()}catch(e){showError(e.message)}};initStars();load();
 </script>
 </body>
