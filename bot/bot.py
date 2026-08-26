@@ -12,14 +12,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 REVIEWS_CHANNEL = os.getenv("REVIEWS_CHANNEL", "OtziviF3hcqcx1")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "F3hcqcx")
 REVIEWS_WEBAPP_URL = os.getenv("REVIEWS_WEBAPP_URL", "https://lainyoffc.github.io/f3hcqcx-webapp/reviews.html")
-STAR_PRICE = 1.53  # Цена одной Telegram Star в USD.
+
+PRICE_PER_STAR_RUB = 1.53
+CURRENCY = "₽"
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не найден. Добавь BOT_TOKEN в переменные окружения Render")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# Новые посты из канала @OtziviF3hcqcx1 автоматически попадают в PostgreSQL.
 try:
     from channel_sync import register_channel_handlers
     register_channel_handlers(bot)
@@ -44,6 +45,11 @@ def save_orders():
 
 
 load_orders()
+
+
+def format_price(amount: int) -> str:
+    total = amount * PRICE_PER_STAR_RUB
+    return f"{total:,.2f}".replace(",", " ")
 
 
 def get_main_keyboard():
@@ -78,7 +84,6 @@ def get_reviews_keyboard():
 
 
 def fetch_reviews_from_channel():
-    """Совместимость со старым кодом: список для сообщений бота берётся из JSON."""
     global reviews_cache
     reviews_file = os.path.join(os.path.dirname(__file__), "reviews_data.json")
     try:
@@ -120,8 +125,14 @@ def start_handler(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_stars")
 def buy_stars_handler(call):
-    username = f"@{call.from_user.username}" if call.from_user.username else call.from_user.first_name
-    text = f"⭐ *Покупка звёзд*\n\n👤 Получатель: {username}\n💵 *Цена 1 звезды:* ${STAR_PRICE:.2f} USD\n\n— Минимум: 50 звёзд\n— Максимум (за один заказ): 100 000 звёзд\n\n🔎 Выберите количество звёзд для покупки:"
+    text = (
+        "⭐ *Покупка звёзд*\n\n"
+        f"💰 *Цена за 1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
+        "\n"
+        "— Минимум: 50 звёзд\n"
+        "— Максимум (за один заказ): 100 000 звёзд\n\n"
+        "🔎 Выберите количество звёзд для покупки:"
+    )
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=get_stars_keyboard(), parse_mode="Markdown")
     bot.answer_callback_query(call.id)
 
@@ -181,12 +192,29 @@ def buy_handler(call):
     user_id = call.from_user.id
     username = f"@{call.from_user.username}" if call.from_user.username else call.from_user.first_name
     order_id = f"{user_id}_{int(time.time())}"
-    total_price = amount * STAR_PRICE
-    order = {"order_id": order_id, "user_id": user_id, "username": username, "amount": amount, "unit_price": STAR_PRICE, "price_usd": round(total_price, 2), "status": "pending", "created_at": datetime.now().isoformat()}
+    total_price = amount * PRICE_PER_STAR_RUB
+    order = {
+        "order_id": order_id,
+        "user_id": user_id,
+        "username": username,
+        "amount": amount,
+        "price_per_star": PRICE_PER_STAR_RUB,
+        "total_price": total_price,
+        "currency": "RUB",
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+    }
     orders_data["orders"].append(order)
     orders_data["users"].setdefault(str(user_id), {}).setdefault("orders", []).append(order_id)
     save_orders()
-    text = f"⭐ *Заказ #{order_id}*\n\n👤 *Покупатель:* {username}\n⭐ *Количество:* {amount} звёзд\n💵 *Цена 1 звезды:* ${STAR_PRICE:.2f} USD\n💰 *Итого:* ${total_price:,.2f} USD\n\n📞 *Для оплаты:* @{SUPPORT_USERNAME}"
+    text = (
+        f"⭐ *Заказ #{order_id}*\n\n"
+        f"👤 *Покупатель:* {username}\n"
+        f"⭐ *Количество:* {amount} звёзд\n"
+        f"💰 *1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
+        f"💵 *Итого:* {format_price(amount)} {CURRENCY}\n\n"
+        f"📞 *Для оплаты:* @{SUPPORT_USERNAME}"
+    )
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton(text="💳 Перейти к оплате", url=f"https://t.me/{SUPPORT_USERNAME}?start=order_{order_id}"))
     keyboard.add(types.InlineKeyboardButton(text="📋 Статус", callback_data=f"status_{order_id}"))
@@ -212,7 +240,14 @@ def order_status_handler(call):
         return
     status_emoji = {"pending": "⏳", "paid": "💰", "processing": "⚙️", "completed": "✅", "cancelled": "❌"}
     status_text = {"pending": "Ожидает оплаты", "paid": "Оплачен", "processing": "В обработке", "completed": "Выполнен", "cancelled": "Отменён"}
-    text = f"📋 *Статус заказа #{order_id}*\n\n{status_emoji.get(order['status'], '❓')} *Статус:* {status_text.get(order['status'], 'Неизвестно')}\n⭐ *Количество:* {order['amount']} звёзд\n💵 *Цена 1 звезды:* ${float(order.get('unit_price', STAR_PRICE)):.2f} USD\n💰 *Итого:* ${float(order.get('price_usd', order.get('amount', 0) * STAR_PRICE)):,.2f} USD\n📅 *Создан:* {order['created_at']}\n"
+    text = (
+        f"📋 *Статус заказа #{order_id}*\n\n"
+        f"{status_emoji.get(order['status'], '❓')} *Статус:* {status_text.get(order['status'], 'Неизвестно')}\n"
+        f"⭐ *Количество:* {order['amount']} звёзд\n"
+        f"💰 *1 ⭐:* {float(order.get('price_per_star', PRICE_PER_STAR_RUB)):.2f} {order.get('currency', 'RUB') == 'RUB' and CURRENCY or 'RUB'}\n"
+        f"💵 *Итого:* {format_price(int(order['amount']))} {CURRENCY}\n"
+        f"📅 *Создан:* {order['created_at']}\n"
+    )
     if order["status"] == "completed":
         text += "\n✅ *Звёзды успешно выданы!*\n"
     keyboard = types.InlineKeyboardMarkup()
