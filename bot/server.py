@@ -22,7 +22,7 @@ WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram/webhook")
 PLATEGA_MERCHANT_ID = os.getenv("PLATEGA_MERCHANT_ID", "")
 PLATEGA_SECRET = os.getenv("PLATEGA_SECRET", "")
 
-app = FastAPI(title="F3hcqcx Reviews API", version="2.6.0")
+app = FastAPI(title="F3hcqcx Reviews API", version="2.6.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lainyoffc.github.io"],
@@ -136,6 +136,13 @@ def startup():
     init_db()
     cleanup_test_review()
     bot = get_bot()
+    if bot:
+        try:
+            from support_features import register_support_handlers
+            register_support_handlers(bot, _bot_module)
+            print("[telegram] support/info/checks handlers registered")
+        except Exception as exc:
+            print(f"[telegram] support handlers unavailable: {exc}")
     if bot and WEBHOOK_URL:
         with suppress(Exception):
             bot.remove_webhook()
