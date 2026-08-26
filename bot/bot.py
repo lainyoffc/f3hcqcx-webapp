@@ -15,6 +15,8 @@ REVIEWS_WEBAPP_URL = os.getenv("REVIEWS_WEBAPP_URL", "https://lainyoffc.github.i
 
 PRICE_PER_STAR_RUB = 1.53
 CURRENCY = "₽"
+MIN_STARS = 50
+MAX_STARS = 100000
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не найден. Добавь BOT_TOKEN в переменные окружения Render")
@@ -30,6 +32,7 @@ except Exception as exc:
 ORDERS_FILE = "orders.json"
 reviews_cache = []
 orders_data = {"orders": [], "users": {}}
+pending_custom_amount = set()
 
 
 def load_orders():
@@ -49,7 +52,45 @@ load_orders()
 
 def format_price(amount: int) -> str:
     total = amount * PRICE_PER_STAR_RUB
-    return f"{total:,.2f}".replace(",", " ")
+    return f"{total:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def create_order_for_user(user, amount: int):
+    if amount < MIN_STARS or amount > MAX_STARS:
+        raise ValueError(f"Количество должно быть от {MIN_STARS:,} до {MAX_STARS:,} звезд")
+
+    user_id = user.id
+    username = f"@{user.username}" if user.username else user.first_name
+    order_id = f"{user_id}_{int(time.time())}"
+    total_price = amount * PRICE_PER_STAR_RUB
+
+    order = {
+        "order_id": order_id,
+        "user_id": user_id,
+        "username": username,
+        "amount": amount,
+        "price_per_star": PRICE_PER_STAR_RUB,
+        "total_price": total_price,
+        "currency": "RUB",
+        "status": "pending",
+        "created_at": datetime.now().isoformat(),
+    }
+    orders_data["orders"].append(order)
+    orders_data["users"].setdefault(str(user_id), {}).setdefault("orders", []).append(order_id)
+    save_orders()
+
+    text = (
+        f"⭐ *Заказ #{order_id}*\n\n"
+        f"👤 *Покупатель:* {username}\n"
+        f"⭐ *Количество:* {amount} звезд\n"
+        f"💰 *1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
+        f"💵 *Итого:* {format_price(amount)} {CURRENCY}\n\n"
+        f"📞 *Для оплаты:* @{SUPPORT_USERNAME}"
+    )
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.add(types.InlineKeyboardButton(text="💳 Перейти к оплате", url=f"https://t.me/{SUPPORT_USERNAME}?start=order_{order_id}"))
+    keyboard.add(types.InlineKeyboardButton(text="📋 Статус", callback_data=f"status_{order_id}"))
+    bot.send_message(user_id, text, reply_markup=keyboard, parse_mode="Markdown")
 
 
 def get_main_keyboard():
@@ -129,8 +170,8 @@ def buy_stars_handler(call):
         "⭐ *Покупка звёзд*\n\n"
         f"💰 *Цена за 1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
         "\n"
-        "— Минимум: 50 звёзд\n"
-        "— Максимум (за один заказ): 100 000 звёзд\n\n"
+        f"— Минимум: {MIN_STARS:,} звезд\n"
+        f"— Максимум (за один заказ): {MAX_STARS:,} звезд\n\n"
         "🔎 Выберите количество звёзд для покупки:"
     )
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=get_stars_keyboard(), parse_mode="Markdown")
@@ -175,50 +216,46 @@ def reviews_filter_handler(call):
     bot.answer_callback_query(call.id)
 
 
+@bot.message_handler(func=lambda message: message.chat.id in pending_custom_amount)
+def custom_amount_message_handler(message):
+    user_id = message.from_user.id
+    pending_custom_amount.discard(message.chat.id)
+    raw = (message.text or "").strip().replace(" ", "").replace(",", ".")
+    try:
+        amount_float = float(raw)
+    except ValueError:
+        bot.send_message(message.chat.id, f"❌ Введите целое число от {MIN_STARS} до {MAX_STARS}.")
+        return
+    if not amount_float.is_integer():
+        bot.send_message(message.chat.id, "❌ Количество звёзд должно быть целым числом.")
+        return
+    amount = int(amount_float)
+    if amount < MIN_STARS or amount > MAX_STARS:
+        bot.send_message(message.chat.id, f"❌ Допустимо от {MIN_STARS:,} до {MAX_STARS:,} звезд.")
+        return
+    create_order_for_user(message.from_user, amount)
+
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
 def buy_handler(call):
     value = call.data.replace("buy_", "")
     if value == "custom":
-        bot.answer_callback_query(call.id, "Введите количество звёзд после нажатия кнопки", show_alert=True)
+        pending_custom_amount.add(call.message.chat.id)
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.message.chat.id,
+            f"⚙️ Введите количество звезд от {MIN_STARS:,} до {MAX_STARS:,}.\n\n💰 Цена: {PRICE_PER_STAR_RUB:.2f} {CURRENCY} за 1 ⭐\n💵 Например: 750 → {format_price(750)} {CURRENCY}"
+        )
         return
     try:
         amount = int(value)
     except ValueError:
         bot.answer_callback_query(call.id, "Некорректное количество", show_alert=True)
         return
-    if amount < 50 or amount > 100000:
-        bot.answer_callback_query(call.id, "Допустимо от 50 до 100 000", show_alert=True)
+    if amount < MIN_STARS or amount > MAX_STARS:
+        bot.answer_callback_query(call.id, f"Допустимо от {MIN_STARS:,} до {MAX_STARS:,}", show_alert=True)
         return
-    user_id = call.from_user.id
-    username = f"@{call.from_user.username}" if call.from_user.username else call.from_user.first_name
-    order_id = f"{user_id}_{int(time.time())}"
-    total_price = amount * PRICE_PER_STAR_RUB
-    order = {
-        "order_id": order_id,
-        "user_id": user_id,
-        "username": username,
-        "amount": amount,
-        "price_per_star": PRICE_PER_STAR_RUB,
-        "total_price": total_price,
-        "currency": "RUB",
-        "status": "pending",
-        "created_at": datetime.now().isoformat(),
-    }
-    orders_data["orders"].append(order)
-    orders_data["users"].setdefault(str(user_id), {}).setdefault("orders", []).append(order_id)
-    save_orders()
-    text = (
-        f"⭐ *Заказ #{order_id}*\n\n"
-        f"👤 *Покупатель:* {username}\n"
-        f"⭐ *Количество:* {amount} звёзд\n"
-        f"💰 *1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
-        f"💵 *Итого:* {format_price(amount)} {CURRENCY}\n\n"
-        f"📞 *Для оплаты:* @{SUPPORT_USERNAME}"
-    )
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton(text="💳 Перейти к оплате", url=f"https://t.me/{SUPPORT_USERNAME}?start=order_{order_id}"))
-    keyboard.add(types.InlineKeyboardButton(text="📋 Статус", callback_data=f"status_{order_id}"))
-    bot.send_message(call.message.chat.id, text, reply_markup=keyboard, parse_mode="Markdown")
+    create_order_for_user(call.from_user, amount)
     bot.answer_callback_query(call.id)
 
 
@@ -243,8 +280,8 @@ def order_status_handler(call):
     text = (
         f"📋 *Статус заказа #{order_id}*\n\n"
         f"{status_emoji.get(order['status'], '❓')} *Статус:* {status_text.get(order['status'], 'Неизвестно')}\n"
-        f"⭐ *Количество:* {order['amount']} звёзд\n"
-        f"💰 *1 ⭐:* {float(order.get('price_per_star', PRICE_PER_STAR_RUB)):.2f} {order.get('currency', 'RUB') == 'RUB' and CURRENCY or 'RUB'}\n"
+        f"⭐ *Количество:* {order['amount']} звезд\n"
+        f"💰 *1 ⭐:* {float(order.get('price_per_star', PRICE_PER_STAR_RUB)):.2f} {CURRENCY}\n"
         f"💵 *Итого:* {format_price(int(order['amount']))} {CURRENCY}\n"
         f"📅 *Создан:* {order['created_at']}\n"
     )
