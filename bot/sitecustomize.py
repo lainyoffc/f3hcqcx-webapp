@@ -1,7 +1,5 @@
 """Safe banner hook for the Buy Stars button."""
 
-import base64
-import os
 import sys
 from pathlib import Path
 
@@ -24,14 +22,7 @@ if telebot is not None:
             if module is None:
                 return result
 
-            path = Path(os.getenv("BUY_STARS_BANNER_PATH", "/tmp/f3hcqcx_buy_stars_banner.jpg"))
-            if not path.exists():
-                encoded = os.getenv("BUY_STARS_BANNER_B64", "")
-                if encoded:
-                    try:
-                        path.write_bytes(base64.b64decode(encoded))
-                    except Exception as exc:
-                        print(f"[banner] decode failed: {exc}")
+            banner_path = Path(__file__).resolve().parent / "assets" / "stars-banner.jpg"
 
             def banner_handler(call):
                 if call.data != "buy_stars":
@@ -48,23 +39,23 @@ if telebot is not None:
                 keyboard = module.get_stars_keyboard()
 
                 try:
-                    sent = None
-                    if path.exists():
-                        with path.open("rb") as photo:
-                            sent = self.send_photo(
+                    if banner_path.is_file():
+                        with banner_path.open("rb") as photo:
+                            self.send_photo(
                                 chat_id,
                                 photo,
                                 caption=text,
                                 reply_markup=keyboard,
                                 parse_mode="Markdown",
                             )
-                    if sent is None:
-                        sent = self.send_message(
+                    else:
+                        self.send_message(
                             chat_id,
                             text,
                             reply_markup=keyboard,
                             parse_mode="Markdown",
                         )
+
                     try:
                         self.delete_message(chat_id, old_message_id)
                     except Exception:
@@ -77,7 +68,11 @@ if telebot is not None:
                     except Exception as fallback_exc:
                         print(f"[banner] fallback failed: {fallback_exc}")
 
-            _original_register(self, banner_handler, lambda call: call.data == "buy_stars")
+            _original_register(
+                self,
+                banner_handler,
+                lambda call: call.data == "buy_stars",
+            )
             self.callback_query_handlers.insert(0, self.callback_query_handlers.pop())
         except Exception as exc:
             print(f"[banner] hook installation failed: {exc}")
