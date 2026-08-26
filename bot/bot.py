@@ -30,13 +30,13 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 BANNER_B64_PATH = ASSETS_DIR / "main-menu.jpg.b64"
 BANNER_RUNTIME_PATH = Path("/tmp/f3hcqcx-main-menu.jpg")
 
-# The five generated section images uploaded to bot/assets.
+# Section images uploaded to bot/assets. Keep each image paired with its actual section.
 SECTION_ASSETS = {
-    "BUY STARS": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb-fotor-20260826161413.png",
-    "PROFILE": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb-fotor-20260826161311.png",
-    "SUPPORT": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(3).png",
+    "BUY STARS": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb-fotor-20260826161311.png",
+    "PROFILE": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb-fotor-20260826161413.png",
+    "SUPPORT": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(1).png",
     "INFORMATION": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(2).png",
-    "RECEIPTS": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(1).png",
+    "RECEIPTS": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(3).png",
 }
 
 if not BOT_TOKEN:
@@ -167,7 +167,7 @@ def send_photo_section(chat_id, old_message_id, title, text, keyboard):
                 message = bot.send_photo(
                     chat_id,
                     photo,
-                    caption=f"F3hcqcx\n{title}\n\n{text}",
+                    caption=text,
                     reply_markup=keyboard,
                     parse_mode="Markdown",
                 )
@@ -188,7 +188,7 @@ def send_purchase_menu(chat_id):
             message = bot.send_photo(
                 chat_id,
                 photo,
-                caption=f"F3hcqcx\nBUY STARS\n\n{purchase_text()}",
+                caption=purchase_text(),
                 reply_markup=get_stars_keyboard(),
                 parse_mode="Markdown",
             )
@@ -339,8 +339,7 @@ def info_handler(call):
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton(text="💬 Поддержка", url=f"https://t.me/{SUPPORT_USERNAME.lstrip('@')}"))
     keyboard.add(types.InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main"))
-    text = f"ℹ️ *F3hcqcx Stars*\n\n⭐ Магазин Telegram Stars\n💰 Цена: {PRICE_PER_STAR_RUB:.2f} ₽ за ⭐\n⚡ Заказы оформляются через бота\n\nПоддержка: @{SUPPORT_USERNAME.lstrip('@')}"
-    send_section(call.message.chat.id, call.message.message_id, text, keyboard)
+    send_section(call.message.chat.id, call.message.message_id, "ℹ️ *F3hcqcx Stars*\n\nМагазин Telegram Stars.\n\nЦена: 1.53 ₽ за ⭐\nМинимум: 50 ⭐\nМаксимум: 100,000 ⭐", keyboard)
     bot.answer_callback_query(call.id)
 
 
@@ -353,47 +352,56 @@ def checks_handler(call):
     bot.answer_callback_query(call.id)
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_") and call.data[4:].isdigit())
-def buy_fixed_handler(call):
-    amount = int(call.data[4:])
-    if amount < MIN_STARS or amount > MAX_STARS:
-        bot.answer_callback_query(call.id, "Некорректное количество", show_alert=True)
+@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
+def buy_amount_handler(call):
+    raw = call.data.removeprefix("buy_")
+    if raw == "custom":
+        pending_custom_amount[call.from_user.id] = True
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, f"Введите количество звёзд от {MIN_STARS} до {MAX_STARS}.")
         return
-    bot.answer_callback_query(call.id, "Оплата пока не подключена", show_alert=True)
-    bot.send_message(call.message.chat.id, f"⭐ {amount:,} звёзд\n💰 К оплате: {format_price(amount)} ₽\n\nОплата временно отключена — подключаем рублёвый платёжный сервис.")
+    try:
+        amount = int(raw)
+        order = create_order_for_user(call.from_user, amount)
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton(text=f"💳 Оплатить {format_price(amount)} ₽", callback_data=f"pay_{order['order_id']}"))
+        keyboard.add(types.InlineKeyboardButton(text="↩️ Назад", callback_data="buy_stars"))
+        clear_purchase_menu(call.message.chat.id)
+        safe_delete(call.message.chat.id, call.message.message_id)
+        bot.send_message(
+            call.message.chat.id,
+            f"⭐ *Заказ на {amount} звёзд*\n\n💰 К оплате: *{format_price(amount)} ₽*\n\nПосле оплаты звёзды будут выданы на ваш Telegram аккаунт.",
+            reply_markup=keyboard,
+            parse_mode="Markdown",
+        )
+        bot.answer_callback_query(call.id)
+    except Exception as exc:
+        bot.answer_callback_query(call.id, str(exc), show_alert=True)
 
 
-@bot.callback_query_handler(func=lambda call: call.data == "buy_custom")
-def buy_custom_handler(call):
-    pending_custom_amount[call.from_user.id] = call.message.message_id
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, f"Введите количество звёзд от {MIN_STARS} до {MAX_STARS} одним числом.")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("pay_"))
+def payment_handler(call):
+    order_id = call.data.removeprefix("pay_")
+    order = find_order(order_id)
+    if not order:
+        bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
+        return
+    bot.answer_callback_query(call.id, "Платёжный провайдер ещё не подключён", show_alert=True)
 
 
 @bot.message_handler(func=lambda message: message.from_user.id in pending_custom_amount)
 def custom_amount_handler(message):
     pending_custom_amount.pop(message.from_user.id, None)
     try:
-        amount = int(message.text.strip())
-        if amount < MIN_STARS or amount > MAX_STARS:
-            raise ValueError(f"Количество должно быть от {MIN_STARS:,} до {MAX_STARS:,} звезд")
-        bot.send_message(message.chat.id, f"⭐ {amount:,} звёзд\n💰 К оплате: {format_price(amount)} ₽\n\nОплата временно отключена — подключаем рублёвый платёжный сервис.")
+        amount = int(message.text.strip().replace(" ", ""))
+        order = create_order_for_user(message.from_user, amount)
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton(text=f"💳 Оплатить {format_price(amount)} ₽", callback_data=f"pay_{order['order_id']}"))
+        bot.send_message(message.chat.id, f"⭐ *Заказ на {amount} звёзд*\n\n💰 К оплате: *{format_price(amount)} ₽*", reply_markup=keyboard, parse_mode="Markdown")
     except Exception as exc:
-        bot.send_message(message.chat.id, f"❌ {exc}")
+        bot.send_message(message.chat.id, str(exc))
 
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("status_"))
-def status_handler(call):
-    order = find_order(call.data[7:])
-    if not order:
-        bot.answer_callback_query(call.id, "Заказ не найден", show_alert=True)
-        return
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, f"🧾 Заказ #{order['order_id']}\n⭐ {order['amount']} Stars\n📋 Статус: {order.get('status', 'unknown')}")
-
-
-try:
-    from channel_sync import register_channel_handlers
-    register_channel_handlers(bot)
-except Exception as exc:
-    print(f"[reviews] channel sync is unavailable: {exc}")
+if __name__ == "__main__":
+    print("F3hcqcx Stars bot started")
+    bot.infinity_polling(skip_pending=True)
