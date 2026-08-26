@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram/webhook")
 
-app = FastAPI(title="F3hcqcx Reviews API", version="2.3.0")
+app = FastAPI(title="F3hcqcx Reviews API", version="2.3.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lainyoffc.github.io"],
@@ -94,10 +94,10 @@ def startup():
 
 @app.on_event("shutdown")
 def shutdown():
-    bot = get_bot()
-    if bot:
-        with suppress(Exception):
-            bot.remove_webhook()
+    # Do NOT remove the webhook here. During a Render deploy, the old
+    # instance can shut down after the new instance has already set the
+    # webhook. Removing it here would silently disable the bot again.
+    pass
 
 
 @app.get("/api/health")
@@ -146,11 +146,15 @@ async def telegram_webhook(request: Request):
     try:
         # Explicitly dispatch /start so the main menu works even if the
         # framework dispatcher misses a webhook update.
-        if update and update.message and (update.message.text or "").split()[0].lower().split("@")[0] == "/start":
-            if _bot_module and hasattr(_bot_module, "start_handler"):
-                print(f"[telegram] direct /start from {update.message.from_user.id}")
-                _bot_module.start_handler(update.message)
-                return {"ok": True}
+        if update and update.message:
+            incoming_text = (update.message.text or "").strip()
+            if incoming_text:
+                command = incoming_text.split()[0].lower().split("@")[0]
+                if command == "/start":
+                    if _bot_module and hasattr(_bot_module, "start_handler"):
+                        print(f"[telegram] direct /start from {update.message.from_user.id}")
+                        _bot_module.start_handler(update.message)
+                        return {"ok": True, "handled": "start"}
 
         # Explicitly persist channel posts. This avoids relying on the
         # dispatcher for the critical review-sync path.
