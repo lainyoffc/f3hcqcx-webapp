@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram/webhook")
 
-app = FastAPI(title="F3hcqcx Reviews API", version="2.2.1")
+app = FastAPI(title="F3hcqcx Reviews API", version="2.3.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lainyoffc.github.io"],
@@ -28,15 +28,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Import bot.py so /start, callbacks and channel handlers are registered on
-# the same TeleBot instance used by the webhook. bot.py only starts polling
-# under __main__, so importing it here does not start a second polling loop.
 _bot = None
-if BOT_TOKEN:
-    try:
-        from bot import bot as _bot
-    except Exception as exc:
-        print(f"[telegram] bot import failed: {exc}")
+_bot_module = None
 
 
 class ReviewCreate(BaseModel):
@@ -45,6 +38,11 @@ class ReviewCreate(BaseModel):
 
 
 def get_bot():
+    global _bot, _bot_module
+    if _bot is None and BOT_TOKEN:
+        import importlib
+        _bot_module = importlib.import_module("bot")
+        _bot = _bot_module.bot
     return _bot
 
 
@@ -80,6 +78,11 @@ def startup():
         with suppress(Exception):
             bot.remove_webhook()
         bot.set_webhook(url=f"{WEBHOOK_URL}{WEBHOOK_PATH}", drop_pending_updates=False)
+        try:
+            me = bot.get_me()
+            print(f"[telegram] bot connected: @{me.username} ({me.id})")
+        except Exception as exc:
+            print(f"[telegram] get_me failed: {exc}")
         print(f"[telegram] webhook set: {WEBHOOK_URL}{WEBHOOK_PATH}")
     elif not BOT_TOKEN:
         print("[telegram] BOT_TOKEN is not configured; API will run without Telegram webhook")
@@ -108,16 +111,64 @@ def health():
     }
 
 
+@app.get("/api/telegram-status")
+def telegram_status():
+    bot = get_bot()
+    if not bot:
+        return {"ok": False, "configured": False}
+    try:
+        me = bot.get_me()
+        webhook = bot.get_webhook_info()
+        return {
+            "ok": True,
+            "configured": True,
+            "bot_id": me.id,
+            "username": me.username,
+            "first_name": me.first_name,
+            "webhook_url": webhook.url,
+            "pending_updates": webhook.pending_update_count,
+            "last_error": webhook.last_error_message,
+        }
+    except Exception as exc:
+        return {"ok": False, "configured": True, "error": str(exc)}
+
+
 @app.post(WEBHOOK_PATH)
 async def telegram_webhook(request: Request):
     bot = get_bot()
     if not bot:
-        return {"ok": False, "error": "BOT_TOKEN is not configured or bot failed to initialize"}
+        return {"ok": False, "error": "BOT_TOKEN is not configured"}
+
     data = await request.json()
     import telebot
     update = telebot.types.Update.de_json(data)
-    bot.process_new_updates([update])
-    return {"ok": True}
+
+    try:
+        # Explicitly dispatch /start so the main menu works even if the
+        # framework dispatcher misses a webhook update.
+        if update and update.message and (update.message.text or "").split()[0].lower().split("@")[0] == "/start":
+            if _bot_module and hasattr(_bot_module, "start_handler"):
+                print(f"[telegram] direct /start from {update.message.from_user.id}")
+                _bot_module.start_handler(update.message)
+                return {"ok": True}
+
+        # Explicitly persist channel posts. This avoids relying on the
+        # dispatcher for the critical review-sync path.
+        if update and update.channel_post:
+            try:
+                from channel_sync import sync_channel_post
+                sync_channel_post(update.channel_post)
+                print(f"[telegram] channel_post handled #{update.channel_post.message_id}")
+            except Exception as exc:
+                print(f"[telegram] channel sync error: {exc}")
+            return {"ok": True}
+
+        print(f"[telegram] update received: {update.update_id if update else 'unknown'}")
+        bot.process_new_updates([update])
+        return {"ok": True}
+    except Exception as exc:
+        print(f"[telegram] update processing failed: {exc}")
+        return {"ok": True}
 
 
 @app.get("/api/reviews")
