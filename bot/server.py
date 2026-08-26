@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram/webhook")
 
-app = FastAPI(title="F3hcqcx Reviews API", version="2.2.0")
+app = FastAPI(title="F3hcqcx Reviews API", version="2.2.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lainyoffc.github.io"],
@@ -28,7 +28,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Import bot.py so /start, callbacks and channel handlers are registered on
+# the same TeleBot instance used by the webhook. bot.py only starts polling
+# under __main__, so importing it here does not start a second polling loop.
 _bot = None
+if BOT_TOKEN:
+    try:
+        from bot import bot as _bot
+    except Exception as exc:
+        print(f"[telegram] bot import failed: {exc}")
 
 
 class ReviewCreate(BaseModel):
@@ -37,13 +45,6 @@ class ReviewCreate(BaseModel):
 
 
 def get_bot():
-    global _bot
-    if _bot is None and BOT_TOKEN:
-        import telebot
-        from channel_sync import register_channel_handlers
-
-        _bot = telebot.TeleBot(BOT_TOKEN)
-        register_channel_handlers(_bot)
     return _bot
 
 
@@ -82,6 +83,8 @@ def startup():
         print(f"[telegram] webhook set: {WEBHOOK_URL}{WEBHOOK_PATH}")
     elif not BOT_TOKEN:
         print("[telegram] BOT_TOKEN is not configured; API will run without Telegram webhook")
+    elif not bot:
+        print("[telegram] bot failed to initialize; webhook is disabled")
     elif not WEBHOOK_URL:
         print("[telegram] WEBHOOK_URL is not configured; Telegram webhook is disabled")
 
@@ -109,7 +112,7 @@ def health():
 async def telegram_webhook(request: Request):
     bot = get_bot()
     if not bot:
-        return {"ok": False, "error": "BOT_TOKEN is not configured"}
+        return {"ok": False, "error": "BOT_TOKEN is not configured or bot failed to initialize"}
     data = await request.json()
     import telebot
     update = telebot.types.Update.de_json(data)
