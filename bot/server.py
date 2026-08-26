@@ -19,8 +19,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram/webhook")
+PLATEGA_MERCHANT_ID = os.getenv("PLATEGA_MERCHANT_ID", "")
+PLATEGA_SECRET = os.getenv("PLATEGA_SECRET", "")
 
-app = FastAPI(title="F3hcqcx Reviews API", version="2.5.0")
+app = FastAPI(title="F3hcqcx Reviews API", version="2.6.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lainyoffc.github.io"],
@@ -73,7 +75,6 @@ def verify_telegram_init_data(init_data: str) -> dict:
 
 
 def cleanup_test_review():
-    """Remove the one review created during setup testing."""
     from reviews_store import DATABASE_URL, _conn
     if not DATABASE_URL:
         return
@@ -82,9 +83,52 @@ def cleanup_test_review():
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM reviews WHERE id = %s", ("channel-0-1787741758314",))
             conn.commit()
-        print("[reviews] setup test review cleanup complete")
     except Exception as exc:
         print(f"[reviews] setup test cleanup skipped: {exc}")
+
+
+def load_orders():
+    path = os.path.join(os.path.dirname(__file__), "orders.json")
+    if not os.path.exists(path):
+        return {"orders": [], "users": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {"orders": [], "users": {}}
+    except (OSError, json.JSONDecodeError):
+        return {"orders": [], "users": {}}
+
+
+def save_orders(data):
+    path = os.path.join(os.path.dirname(__file__), "orders.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def find_order_by_platega_transaction(transaction_id: str):
+    data = load_orders()
+    for order in data.get("orders", []):
+        if str(order.get("platega_transaction_id", "")) == str(transaction_id):
+            return data, order
+    return data, None
+
+
+def find_order_by_id(order_id: str):
+    data = load_orders()
+    for order in data.get("orders", []):
+        if str(order.get("order_id")) == str(order_id):
+            return data, order
+    return data, None
+
+
+def trigger_fragment_for_order(order: dict):
+    bot = get_bot()
+    if not bot or not _bot_module or not hasattr(_bot_module, "issue_stars_after_payment"):
+        return
+    try:
+        _bot_module.issue_stars_after_payment(order)
+    except Exception as exc:
+        print(f"[fragment] trigger failed: {exc}")
 
 
 @app.on_event("startup")
@@ -102,19 +146,10 @@ def startup():
         except Exception as exc:
             print(f"[telegram] get_me failed: {exc}")
         print(f"[telegram] webhook set: {WEBHOOK_URL}{WEBHOOK_PATH}")
-    elif not BOT_TOKEN:
-        print("[telegram] BOT_TOKEN is not configured; API will run without Telegram webhook")
-    elif not bot:
-        print("[telegram] bot failed to initialize; webhook is disabled")
-    elif not WEBHOOK_URL:
-        print("[telegram] WEBHOOK_URL is not configured; Telegram webhook is disabled")
 
 
 @app.on_event("shutdown")
 def shutdown():
-    # Do NOT remove the webhook here. During a Render deploy, the old
-    # instance can shut down after the new instance has already set the
-    # webhook. Removing it here would silently disable the bot again.
     pass
 
 
@@ -126,6 +161,7 @@ def health():
         "service": "f3hcqcx-reviews",
         "database": True,
         "telegram_webhook": bool(bot and WEBHOOK_URL),
+        "platega": bool(PLATEGA_MERCHANT_ID and PLATEGA_SECRET),
     }
 
 
@@ -168,7 +204,6 @@ async def telegram_webhook(request: Request):
                 command = incoming_text.split()[0].lower().split("@")[0]
                 if command == "/start":
                     if _bot_module and hasattr(_bot_module, "start_handler"):
-                        print(f"[telegram] direct /start from {update.message.from_user.id}")
                         _bot_module.start_handler(update.message)
                         return {"ok": True, "handled": "start"}
 
@@ -176,17 +211,67 @@ async def telegram_webhook(request: Request):
             try:
                 from channel_sync import sync_channel_post
                 sync_channel_post(update.channel_post)
-                print(f"[telegram] channel_post handled #{update.channel_post.message_id}")
             except Exception as exc:
                 print(f"[telegram] channel sync error: {exc}")
             return {"ok": True}
 
-        print(f"[telegram] update received: {update.update_id if update else 'unknown'}")
         bot.process_new_updates([update])
         return {"ok": True}
     except Exception as exc:
         print(f"[telegram] update processing failed: {exc}")
         return {"ok": True}
+
+
+@app.post("/platega/callback")
+async def platega_callback(request: Request):
+    if not PLATEGA_MERCHANT_ID or not PLATEGA_SECRET:
+        return {"ok": False, "error": "Platega is not configured"}
+
+    merchant = request.headers.get("X-MerchantId", "")
+    secret = request.headers.get("X-Secret", "")
+    if not hmac.compare_digest(merchant, PLATEGA_MERCHANT_ID) or not hmac.compare_digest(secret, PLATEGA_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid Platega credentials")
+
+    payload = await request.json()
+    transaction_id = payload.get("id") or payload.get("transactionId")
+    status = str(payload.get("status", "")).upper()
+    amount = payload.get("amount")
+    currency = payload.get("currency")
+    print(f"[platega] callback transaction={transaction_id} status={status} amount={amount} {currency}")
+
+    if not transaction_id:
+        return {"ok": True, "ignored": "missing transaction id"}
+
+    data, order = find_order_by_platega_transaction(transaction_id)
+    if not order:
+        return {"ok": True, "ignored": "unknown transaction"}
+
+    if status == "CONFIRMED":
+        if order.get("status") in {"processing", "completed"}:
+            return {"ok": True, "already_processed": True}
+        order["status"] = "paid"
+        order["paid_at"] = time.time()
+        order["platega_status"] = status
+        save_orders(data)
+        trigger_fragment_for_order(order)
+    elif status == "CANCELED":
+        order["status"] = "cancelled"
+        order["platega_status"] = status
+        save_orders(data)
+    elif status == "CHARGEBACKED":
+        order["status"] = "chargebacked"
+        order["platega_status"] = status
+        save_orders(data)
+
+    return {"ok": True}
+
+
+@app.get("/api/order/{order_id}")
+def get_order(order_id: str):
+    _, order = find_order_by_id(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
 
 
 @app.get("/api/reviews")
