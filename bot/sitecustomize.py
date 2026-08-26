@@ -1,8 +1,8 @@
 """Runtime hook for the Telegram bot.
 
-Injects the uploaded F3hcqcx Stars banner into the Buy Stars callback without
-requiring the binary image to live in the Git repository. The image bytes are
-stored in Render as BUY_STARS_BANNER_B64 and reconstructed on startup.
+Injects the F3hcqcx Stars banner into the Buy Stars callback. Render stores the
+banner bytes in BUY_STARS_BANNER_B64 so the binary image does not need to be
+committed to GitHub.
 """
 
 import base64
@@ -22,21 +22,20 @@ if telebot is not None:
     def _patched_register_callback_query_handler(self, callback, func, pass_bot=False, **kwargs):
         result = _original_register_callback(self, callback, func, pass_bot=pass_bot, **kwargs)
 
-        # When bot.py registers the normal "buy_stars" handler, add a wrapper
-        # ahead of it which sends the branded banner photo above the purchase
-        # message. The original handler remains as a fallback if the banner
-        # cannot be reconstructed/sent.
         if getattr(callback, "__name__", "") == "buy_stars_handler":
             try:
                 module = sys.modules.get(callback.__module__)
                 if module is None:
                     return result
 
-                banner_path = Path(os.getenv("BUY_STARS_BANNER_PATH", "/tmp/f3hcqcx_buy_stars_banner.png"))
+                banner_path = Path(os.getenv("BUY_STARS_BANNER_PATH", "/tmp/f3hcqcx_buy_stars_banner.jpg"))
                 if not banner_path.exists():
                     encoded = os.getenv("BUY_STARS_BANNER_B64", "")
                     if encoded:
-                        banner_path.write_bytes(base64.b64decode(encoded))
+                        try:
+                            banner_path.write_bytes(base64.b64decode(encoded))
+                        except Exception as exc:
+                            print(f"[banner] cannot decode banner: {exc}")
 
                 def banner_buy_stars_handler(call):
                     if call.data != "buy_stars":
@@ -65,8 +64,6 @@ if telebot is not None:
                                     parse_mode="Markdown",
                                 )
                         else:
-                            # If the environment variable is unavailable, keep
-                            # the purchase flow working normally.
                             callback(call)
                         self.answer_callback_query(call.id)
                     except Exception as exc:
@@ -81,7 +78,6 @@ if telebot is not None:
                     banner_buy_stars_handler,
                     lambda call: call.data == "buy_stars",
                 )
-                # Put the banner handler first so it wins over the original.
                 self.callback_query_handlers.insert(0, self.callback_query_handlers.pop())
             except Exception as exc:
                 print(f"[banner] hook installation failed: {exc}")
