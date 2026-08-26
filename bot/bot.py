@@ -14,7 +14,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "F3hcqcx")
-REVIEWS_WEBAPP_URL = os.getenv("REVIEWS_WEBAPP_URL", "https://lainyoffc.github.io/f3hcqcx-webapp/reviews.html")
+REVIEWS_WEBAPP_URL = os.getenv("REVIEWS_WEBAPP_URL", "https://lainych.github.io/f3hcqcx-webapp/reviews.html")
 
 PRICE_PER_STAR_RUB = 1.53
 CURRENCY = "₽"
@@ -26,8 +26,18 @@ FRAGMENT_API_KEY = os.getenv("FRAGMENT_API_KEY", "")
 FRAGMENT_PAYMENT_METHOD = os.getenv("FRAGMENT_PAYMENT_METHOD", "usdt_ton")
 
 ORDERS_FILE = os.path.join(os.path.dirname(__file__), "orders.json")
-BANNER_B64_PATH = Path(__file__).resolve().parent / "assets" / "main-menu.jpg.b64"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
+BANNER_B64_PATH = ASSETS_DIR / "main-menu.jpg.b64"
 BANNER_RUNTIME_PATH = Path("/tmp/f3hcqcx-main-menu.jpg")
+
+# The five generated section images uploaded to bot/assets.
+SECTION_ASSETS = {
+    "BUY STARS": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb-fotor-20260826161413.png",
+    "PROFILE": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb-fotor-20260826161311.png",
+    "SUPPORT": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(3).png",
+    "INFORMATION": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(2).png",
+    "RECEIPTS": ASSETS_DIR / "878d42de-cfa8-456a-9e4b-daacd88b6ffb(1).png",
+}
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не найден. Добавь BOT_TOKEN в переменные окружения Render")
@@ -50,6 +60,11 @@ def ensure_banner():
     except Exception as exc:
         print(f"[banner] load failed: {exc}")
         return False
+
+
+def asset_path(title):
+    path = SECTION_ASSETS.get(title)
+    return path if path and path.is_file() else None
 
 
 def load_orders():
@@ -145,9 +160,10 @@ def send_main_menu(chat_id, username=None):
 
 
 def send_photo_section(chat_id, old_message_id, title, text, keyboard):
-    if ensure_banner():
+    path = asset_path(title)
+    if path:
         try:
-            with BANNER_RUNTIME_PATH.open("rb") as photo:
+            with path.open("rb") as photo:
                 message = bot.send_photo(
                     chat_id,
                     photo,
@@ -158,7 +174,7 @@ def send_photo_section(chat_id, old_message_id, title, text, keyboard):
             safe_delete(chat_id, old_message_id)
             return message
         except Exception as exc:
-            print(f"[section photo] send failed: {exc}")
+            print(f"[section photo:{title}] send failed: {exc}")
     safe_delete(chat_id, old_message_id)
     return bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
 
@@ -166,8 +182,9 @@ def send_photo_section(chat_id, old_message_id, title, text, keyboard):
 def send_purchase_menu(chat_id):
     old = purchase_menu_messages.pop(chat_id, None)
     safe_delete(chat_id, old)
-    if ensure_banner():
-        with BANNER_RUNTIME_PATH.open("rb") as photo:
+    path = asset_path("BUY STARS")
+    if path:
+        with path.open("rb") as photo:
             message = bot.send_photo(
                 chat_id,
                 photo,
@@ -202,20 +219,6 @@ def clear_purchase_menu(chat_id):
     safe_delete(chat_id, old)
 
 
-def create_xtr_invoice(order):
-    payload = json.dumps({"order_id": order["order_id"]}, separators=(",", ":"))
-    return bot.send_invoice(
-        chat_id=order["user_id"],
-        title=f"Telegram Stars — {order['amount']} ⭐",
-        description=f"Покупка {order['amount']} Telegram Stars для {order['username']}",
-        invoice_payload=payload,
-        provider_token="",
-        currency="XTR",
-        prices=[types.LabeledPrice(label=f"{order['amount']} Telegram Stars", amount=order['amount'])],
-        start_parameter=f"stars_{order['order_id']}",
-    )
-
-
 def create_order_for_user(user, amount):
     if amount < MIN_STARS or amount > MAX_STARS:
         raise ValueError(f"Количество должно быть от {MIN_STARS:,} до {MAX_STARS:,} звезд")
@@ -229,16 +232,12 @@ def create_order_for_user(user, amount):
         "recipient": user.username,
         "amount": int(amount),
         "total_price_rub": round(amount * PRICE_PER_STAR_RUB, 2),
-        "payment_currency": "XTR",
-        "payment_amount_xtr": int(amount),
-        "status": "pending_payment",
+        "payment_currency": "RUB",
+        "status": "awaiting_payment_provider",
         "created_at": datetime.now().isoformat(),
     }
     orders_data.setdefault("orders", []).append(order)
     orders_data.setdefault("users", {}).setdefault(str(user.id), {}).setdefault("orders", []).append(order_id)
-    save_orders()
-    invoice = create_xtr_invoice(order)
-    order["invoice_message_id"] = getattr(invoice, "message_id", None)
     save_orders()
     return order
 
@@ -357,13 +356,11 @@ def checks_handler(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_") and call.data[4:].isdigit())
 def buy_fixed_handler(call):
     amount = int(call.data[4:])
-    try:
-        clear_purchase_menu(call.message.chat.id)
-        create_order_for_user(call.from_user, amount)
-        safe_delete(call.message.chat.id, call.message.message_id)
-        bot.answer_callback_query(call.id, f"Счёт на {amount} ⭐ создан")
-    except Exception as exc:
-        bot.answer_callback_query(call.id, str(exc)[:180], show_alert=True)
+    if amount < MIN_STARS or amount > MAX_STARS:
+        bot.answer_callback_query(call.id, "Некорректное количество", show_alert=True)
+        return
+    bot.answer_callback_query(call.id, "Оплата пока не подключена", show_alert=True)
+    bot.send_message(call.message.chat.id, f"⭐ {amount:,} звёзд\n💰 К оплате: {format_price(amount)} ₽\n\nОплата временно отключена — подключаем рублёвый платёжный сервис.")
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_custom")
@@ -378,36 +375,11 @@ def custom_amount_handler(message):
     pending_custom_amount.pop(message.from_user.id, None)
     try:
         amount = int(message.text.strip())
-        create_order_for_user(message.from_user, amount)
-        bot.send_message(message.chat.id, f"✅ Счёт на {amount} ⭐ создан. Сумма: {format_price(amount)} ₽ по внутреннему курсу.")
+        if amount < MIN_STARS or amount > MAX_STARS:
+            raise ValueError(f"Количество должно быть от {MIN_STARS:,} до {MAX_STARS:,} звезд")
+        bot.send_message(message.chat.id, f"⭐ {amount:,} звёзд\n💰 К оплате: {format_price(amount)} ₽\n\nОплата временно отключена — подключаем рублёвый платёжный сервис.")
     except Exception as exc:
         bot.send_message(message.chat.id, f"❌ {exc}")
-
-
-@bot.pre_checkout_query_handler(func=lambda query: True)
-def pre_checkout_handler(query):
-    bot.answer_pre_checkout_query(query.id, ok=True)
-
-
-@bot.message_handler(content_types=["successful_payment"])
-def successful_payment_handler(message):
-    payment = message.successful_payment
-    try:
-        payload = json.loads(payment.invoice_payload)
-        order = find_order(payload.get("order_id"))
-    except Exception:
-        order = None
-    if not order:
-        bot.send_message(message.chat.id, "✅ Оплата получена. Заказ не удалось сопоставить, обратитесь в поддержку.")
-        return
-    order["status"] = "paid"
-    order["paid_amount_xtr"] = payment.total_amount
-    order["telegram_payment_charge_id"] = payment.telegram_payment_charge_id
-    order["paid_at"] = time.time()
-    save_orders()
-    safe_delete(message.chat.id, order.get("invoice_message_id"))
-    issue_stars_after_payment(order)
-    bot.send_message(message.chat.id, f"✅ Оплата подтверждена.\n\n⭐ Заказ: {order['amount']} Stars\n📋 Статус: {order.get('status')}")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("status_"))
