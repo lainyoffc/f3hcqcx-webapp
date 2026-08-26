@@ -144,15 +144,55 @@ def send_main_menu(chat_id, username=None):
     return bot.send_message(chat_id, main_text(username), reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
 
+def send_photo_section(chat_id, old_message_id, title, text, keyboard):
+    if ensure_banner():
+        try:
+            with BANNER_RUNTIME_PATH.open("rb") as photo:
+                message = bot.send_photo(
+                    chat_id,
+                    photo,
+                    caption=f"F3hcqcx\n{title}\n\n{text}",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown",
+                )
+            safe_delete(chat_id, old_message_id)
+            return message
+        except Exception as exc:
+            print(f"[section photo] send failed: {exc}")
+    safe_delete(chat_id, old_message_id)
+    return bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
+
+
 def send_purchase_menu(chat_id):
     old = purchase_menu_messages.pop(chat_id, None)
     safe_delete(chat_id, old)
-    message = bot.send_message(chat_id, purchase_text(), reply_markup=get_stars_keyboard(), parse_mode="Markdown")
+    if ensure_banner():
+        with BANNER_RUNTIME_PATH.open("rb") as photo:
+            message = bot.send_photo(
+                chat_id,
+                photo,
+                caption=f"F3hcqcx\nBUY STARS\n\n{purchase_text()}",
+                reply_markup=get_stars_keyboard(),
+                parse_mode="Markdown",
+            )
+    else:
+        message = bot.send_message(chat_id, purchase_text(), reply_markup=get_stars_keyboard(), parse_mode="Markdown")
     purchase_menu_messages[chat_id] = message.message_id
     return message
 
 
 def send_section(chat_id, old_message_id, text, keyboard):
+    if text.startswith("💬 *Отзывы"):
+        safe_delete(chat_id, old_message_id)
+        return bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
+    if text.startswith("👤 *Профиль"):
+        return send_photo_section(chat_id, old_message_id, "PROFILE", text, keyboard)
+    if text.startswith("❓ *Поддержка"):
+        return send_photo_section(chat_id, old_message_id, "SUPPORT", text, keyboard)
+    if text.startswith("ℹ️ *F3hcqcx Stars"):
+        return send_photo_section(chat_id, old_message_id, "INFORMATION", text, keyboard)
+    if text.startswith("🧾 *Чеки"):
+        return send_photo_section(chat_id, old_message_id, "RECEIPTS", text, keyboard)
     safe_delete(chat_id, old_message_id)
     return bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
 
@@ -212,7 +252,6 @@ def issue_stars_after_payment(order):
         order["fragment_error"] = "FRAGMENT_API_KEY is not configured"
         save_orders()
         return
-    # Оставляем существующую интеграцию Fragment без изменений.
     order["fragment_status"] = "queued"
     save_orders()
 
@@ -248,7 +287,7 @@ def start_handler(message):
 @bot.callback_query_handler(func=lambda call: call.data == "buy_stars")
 def buy_stars_handler(call):
     try:
-        new_message = send_purchase_menu(call.message.chat.id)
+        send_purchase_menu(call.message.chat.id)
         safe_delete(call.message.chat.id, call.message.message_id)
         bot.answer_callback_query(call.id)
     except Exception as exc:
@@ -320,7 +359,7 @@ def buy_fixed_handler(call):
     amount = int(call.data[4:])
     try:
         clear_purchase_menu(call.message.chat.id)
-        order = create_order_for_user(call.from_user, amount)
+        create_order_for_user(call.from_user, amount)
         safe_delete(call.message.chat.id, call.message.message_id)
         bot.answer_callback_query(call.id, f"Счёт на {amount} ⭐ создан")
     except Exception as exc:
@@ -339,7 +378,7 @@ def custom_amount_handler(message):
     pending_custom_amount.pop(message.from_user.id, None)
     try:
         amount = int(message.text.strip())
-        order = create_order_for_user(message.from_user, amount)
+        create_order_for_user(message.from_user, amount)
         bot.send_message(message.chat.id, f"✅ Счёт на {amount} ⭐ создан. Сумма: {format_price(amount)} ₽ по внутреннему курсу.")
     except Exception as exc:
         bot.send_message(message.chat.id, f"❌ {exc}")
