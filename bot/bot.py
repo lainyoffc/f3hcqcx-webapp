@@ -15,6 +15,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "F3hcqcx")
 REVIEWS_WEBAPP_URL = os.getenv("REVIEWS_WEBAPP_URL", "https://lainyoffc.github.io/f3hcqcx-webapp/reviews.html")
 PURCHASE_BANNER_URL = "https://raw.githubusercontent.com/lainyoffc/f3hcqcx-webapp/main/bot/assets/stars-banner.jpg"
+PURCHASE_BANNER_PATH = os.path.join(os.path.dirname(__file__), "assets", "stars-banner.jpg")
 
 PRICE_PER_STAR_RUB = 1.53
 CURRENCY = "₽"
@@ -122,13 +123,32 @@ def purchase_caption():
 
 def send_purchase_menu(chat_id):
     clear_purchase_menu(chat_id)
-    message = bot.send_photo(
-        chat_id,
-        PURCHASE_BANNER_URL,
-        caption=purchase_caption(),
-        reply_markup=get_stars_keyboard(),
-        parse_mode="Markdown",
-    )
+    message = None
+    try:
+        if os.path.isfile(PURCHASE_BANNER_PATH):
+            with open(PURCHASE_BANNER_PATH, "rb") as photo:
+                message = bot.send_photo(
+                    chat_id,
+                    photo,
+                    caption=purchase_caption(),
+                    reply_markup=get_stars_keyboard(),
+                    parse_mode="Markdown",
+                )
+        else:
+            message = bot.send_message(
+                chat_id,
+                purchase_caption(),
+                reply_markup=get_stars_keyboard(),
+                parse_mode="Markdown",
+            )
+    except Exception as exc:
+        print(f"[purchase_menu] send failed: {exc}")
+        message = bot.send_message(
+            chat_id,
+            purchase_caption(),
+            reply_markup=get_stars_keyboard(),
+            parse_mode="Markdown",
+        )
     purchase_menu_messages[chat_id] = message.message_id
     return message
 
@@ -287,9 +307,20 @@ def start_handler(message):
 
 @bot.callback_query_handler(func=lambda call: call.data == "buy_stars")
 def buy_stars_handler(call):
-    clear_purchase_menu(call.message.chat.id, call.message.message_id)
-    send_purchase_menu(call.message.chat.id)
-    bot.answer_callback_query(call.id)
+    try:
+        chat_id = call.message.chat.id
+        old_message_id = call.message.message_id
+        # Новый экран отправляется ПЕРВЫМ. Старое сообщение удаляем только после успеха.
+        new_message = send_purchase_menu(chat_id)
+        if new_message and new_message.message_id != old_message_id:
+            safe_delete(chat_id, old_message_id)
+        bot.answer_callback_query(call.id)
+    except Exception as exc:
+        print(f"[buy_stars] handler failed: {exc}")
+        try:
+            bot.answer_callback_query(call.id, "Не удалось открыть меню покупки", show_alert=False)
+        except Exception:
+            pass
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "profile")
@@ -357,143 +388,3 @@ def checks_handler(call):
     keyboard.add(types.InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main"))
     bot.edit_message_text("\n".join(lines), call.message.chat.id, call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
     bot.answer_callback_query(call.id)
-
-
-@bot.message_handler(func=lambda message: message.chat.id in pending_custom_amount)
-def custom_amount_message_handler(message):
-    pending_custom_amount.discard(message.chat.id)
-    raw = (message.text or "").strip().replace(" ", "").replace(",", ".")
-    try:
-        amount_float = float(raw)
-    except ValueError:
-        bot.send_message(message.chat.id, f"❌ Введите целое число от {MIN_STARS} до {MAX_STARS}.")
-        return
-    if not amount_float.is_integer():
-        bot.send_message(message.chat.id, "❌ Количество звёзд должно быть целым числом.")
-        return
-    amount = int(amount_float)
-    if amount < MIN_STARS or amount > MAX_STARS:
-        bot.send_message(message.chat.id, f"❌ Допустимо от {MIN_STARS:,} до {MAX_STARS:,} звезд.")
-        return
-    try:
-        create_order_for_user(message.from_user, amount)
-        bot.send_message(message.chat.id, f"🧾 Счёт создан на {amount} ⭐.\n💰 Внутренняя цена: {format_price(amount)} ₽.")
-    except Exception as exc:
-        bot.send_message(message.chat.id, f"❌ {exc}")
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
-def buy_handler(call):
-    value = call.data.replace("buy_", "", 1)
-    if value == "custom":
-        clear_purchase_menu(call.message.chat.id, call.message.message_id)
-        pending_custom_amount.add(call.message.chat.id)
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id, f"⚙️ Введите количество звезд от {MIN_STARS:,} до {MAX_STARS:,}.\n\n💰 Внутренняя цена: {PRICE_PER_STAR_RUB:.2f} ₽ за 1 ⭐\n💳 Оплата будет в Telegram Stars (XTR).\n💵 Например: 750 → {format_price(750)} ₽")
-        return
-    try:
-        amount = int(value)
-        if amount < MIN_STARS or amount > MAX_STARS:
-            raise ValueError
-        clear_purchase_menu(call.message.chat.id, call.message.message_id)
-        create_order_for_user(call.from_user, amount)
-        bot.answer_callback_query(call.id)
-    except ValueError:
-        bot.answer_callback_query(call.id, f"Допустимо от {MIN_STARS:,} до {MAX_STARS:,}", show_alert=True)
-    except Exception as exc:
-        bot.answer_callback_query(call.id, "Не удалось создать счёт", show_alert=True)
-        bot.send_message(call.message.chat.id, f"❌ {exc}")
-
-
-@bot.pre_checkout_query_handler(func=lambda query: True)
-def pre_checkout_handler(query):
-    try:
-        payload = json.loads(query.invoice_payload)
-        order_id = str(payload.get("order_id", ""))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        bot.answer_pre_checkout_query(query.id, ok=False, error_message="Некорректный заказ.")
-        return
-    order = find_order(order_id)
-    if not order:
-        bot.answer_pre_checkout_query(query.id, ok=False, error_message="Заказ не найден.")
-        return
-    if query.currency != "XTR" or int(query.total_amount) != int(order.get("payment_amount_xtr", order.get("amount", 0))):
-        bot.answer_pre_checkout_query(query.id, ok=False, error_message="Сумма заказа не совпадает.")
-        return
-    if order.get("status") != "pending_payment":
-        bot.answer_pre_checkout_query(query.id, ok=False, error_message="Этот заказ уже обработан.")
-        return
-    bot.answer_pre_checkout_query(query.id, ok=True)
-
-
-@bot.message_handler(content_types=["successful_payment"])
-def successful_payment_handler(message):
-    payment = message.successful_payment
-    try:
-        payload = json.loads(payment.invoice_payload)
-        order_id = str(payload.get("order_id", ""))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        bot.send_message(message.chat.id, "❌ Не удалось определить заказ.")
-        return
-
-    order = find_order(order_id)
-    if not order:
-        bot.send_message(message.chat.id, "✅ Платёж получен, но заказ не найден. Обратитесь в поддержку.")
-        return
-    if order.get("status") in {"processing", "completed"}:
-        return
-
-    cleanup_paid_invoice(order, message.chat.id)
-    order["status"] = "paid"
-    order["telegram_payment_charge_id"] = getattr(payment, "telegram_payment_charge_id", "")
-    order["telegram_provider_payment_charge_id"] = getattr(payment, "provider_payment_charge_id", "")
-    order["paid_amount_xtr"] = int(getattr(payment, "total_amount", order["amount"]))
-    order["paid_currency"] = payment.currency
-    save_orders()
-    bot.send_message(message.chat.id, f"✅ Оплата {order['paid_amount_xtr']} XTR подтверждена.\n⏳ Передаём заказ на выдачу {order['amount']} ⭐.")
-    issue_stars_after_payment(order)
-
-
-@bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
-def back_handler(call):
-    clear_purchase_menu(call.message.chat.id, call.message.message_id)
-    try:
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-    except Exception:
-        pass
-    send_main_menu(call.message.chat.id, f"@{call.from_user.username}" if call.from_user.username else call.from_user.first_name)
-    bot.answer_callback_query(call.id)
-
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("status_"))
-def order_status_handler(call):
-    order_id = call.data.replace("status_", "", 1)
-    order = find_order(order_id)
-    if not order:
-        bot.answer_callback_query(call.id, "❌ Заказ не найден", show_alert=True)
-        return
-    if int(order.get("user_id", -1)) != int(call.from_user.id):
-        bot.answer_callback_query(call.id, "❌ Это не ваш заказ", show_alert=True)
-        return
-    status_text = {"pending_payment": "Ожидает оплаты", "paid": "Оплачен, выдаём Stars", "processing": "Выдаём Stars", "completed": "Выполнен", "cancelled": "Отменён"}
-    text = (
-        f"📋 *Заказ #{order_id}*\n\n"
-        f"⭐ Количество: {order.get('amount', 0)}\n"
-        f"💰 Внутренняя сумма: {format_price(int(order.get('amount', 0)))} ₽\n"
-        f"💳 Оплата: {order.get('paid_amount_xtr', order.get('payment_amount_xtr', 0))} XTR\n"
-        f"📌 Статус: {status_text.get(order.get('status'), order.get('status'))}"
-    )
-    keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton(text="🔄 Обновить", callback_data=f"status_{order_id}"))
-    keyboard.add(types.InlineKeyboardButton(text="↩️ Назад", callback_data="buy_stars"))
-    bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
-    bot.answer_callback_query(call.id)
-
-
-if __name__ == "__main__":
-    bot.polling(
-        none_stop=True,
-        timeout=60,
-        long_polling_timeout=30,
-        allowed_updates=["message", "callback_query", "pre_checkout_query", "channel_post", "edited_channel_post"],
-    )
