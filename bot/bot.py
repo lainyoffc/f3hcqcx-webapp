@@ -14,7 +14,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "F3hcqcx")
-REVIEWS_WEBAPP_URL = os.getenv("REVIEWS_WEBAPP_URL", "https://lainych.github.io/f3hcqcx-webapp/reviews.html")
+REVIEWS_WEBAPP_URL = os.getenv("REVIEWS_WEBAPP_URL", "https://lainyoffc.github.io/f3hcqcx-webapp/reviews.html")
 
 PRICE_PER_STAR_RUB = 1.53
 CURRENCY = "₽"
