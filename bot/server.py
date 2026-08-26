@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/telegram/webhook")
 
-app = FastAPI(title="F3hcqcx Reviews API", version="2.4.0")
+app = FastAPI(title="F3hcqcx Reviews API", version="2.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://lainyoffc.github.io"],
@@ -72,9 +72,25 @@ def verify_telegram_init_data(init_data: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid Telegram initData")
 
 
+def cleanup_test_review():
+    """Remove the one review created during setup testing."""
+    from reviews_store import DATABASE_URL, _conn
+    if not DATABASE_URL:
+        return
+    try:
+        with _conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM reviews WHERE id = %s", ("channel-0-1787741758314",))
+            conn.commit()
+        print("[reviews] setup test review cleanup complete")
+    except Exception as exc:
+        print(f"[reviews] setup test cleanup skipped: {exc}")
+
+
 @app.on_event("startup")
 def startup():
     init_db()
+    cleanup_test_review()
     bot = get_bot()
     if bot and WEBHOOK_URL:
         with suppress(Exception):
