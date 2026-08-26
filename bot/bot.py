@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 import time
 import json
 import os
+import urllib.request
+import urllib.error
+import uuid
 
 load_dotenv()
 
@@ -17,6 +20,16 @@ PRICE_PER_STAR_RUB = 1.53
 CURRENCY = "₽"
 MIN_STARS = 50
 MAX_STARS = 100000
+
+PLATEGA_URL = os.getenv("PLATEGA_URL", "https://app.platega.io/v2/transaction/process")
+PLATEGA_MERCHANT_ID = os.getenv("PLATEGA_MERCHANT_ID", "")
+PLATEGA_SECRET = os.getenv("PLATEGA_SECRET", "")
+PLATEGA_RETURN_URL = os.getenv("PLATEGA_RETURN_URL", REVIEWS_WEBAPP_URL)
+PLATEGA_FAILED_URL = os.getenv("PLATEGA_FAILED_URL", REVIEWS_WEBAPP_URL)
+
+FRAGMENT_API_URL = os.getenv("FRAGMENT_API_URL", "https://api.fragment-api.io")
+FRAGMENT_API_KEY = os.getenv("FRAGMENT_API_KEY", "")
+FRAGMENT_PAYMENT_METHOD = os.getenv("FRAGMENT_PAYMENT_METHOD", "usdt_ton")
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN не найден. Добавь BOT_TOKEN в переменные окружения Render")
@@ -38,8 +51,13 @@ pending_custom_amount = set()
 def load_orders():
     global orders_data
     if os.path.exists(ORDERS_FILE):
-        with open(ORDERS_FILE, "r", encoding="utf-8") as f:
-            orders_data = json.load(f)
+        try:
+            with open(ORDERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                orders_data = data
+        except (OSError, json.JSONDecodeError):
+            pass
 
 
 def save_orders():
@@ -55,42 +73,155 @@ def format_price(amount: int) -> str:
     return f"{total:,.2f}".replace(",", " ").replace(".", ",")
 
 
+def _platega_headers():
+    return {
+        "X-MerchantId": PLATEGA_MERCHANT_ID,
+        "X-Secret": PLATEGA_SECRET,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def create_platega_payment(order: dict):
+    if not PLATEGA_MERCHANT_ID or not PLATEGA_SECRET:
+        return None, "PLATEGA_MERCHANT_ID / PLATEGA_SECRET не настроены"
+
+    payload = {
+        "paymentDetails": {
+            "amount": round(float(order["total_price"]), 2),
+            "currency": "RUB",
+        },
+        "description": f"Покупка {order['amount']} Telegram Stars — заказ #{order['order_id']}",
+        "return": PLATEGA_RETURN_URL,
+        "failedUrl": PLATEGA_FAILED_URL,
+        "payload": json.dumps({"order_id": order["order_id"], "user_id": order["user_id"]}, ensure_ascii=False),
+        "metadata": {
+            "userId": str(order["user_id"]),
+            "userName": order.get("username", ""),
+        },
+    }
+    request = urllib.request.Request(
+        PLATEGA_URL,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers=_platega_headers(),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            body = json.loads(response.read().decode("utf-8"))
+        transaction_id = body.get("transactionId") or body.get("id")
+        payment_url = body.get("url") or body.get("redirect")
+        if not transaction_id or not payment_url:
+            return None, f"Platega вернул неполный ответ: {body}"
+        return {"transaction_id": transaction_id, "payment_url": payment_url, "raw": body}, None
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        return None, f"Platega HTTP {exc.code}: {details[:500]}"
+    except Exception as exc:
+        return None, f"Platega error: {exc}"
+
+
 def create_order_for_user(user, amount: int):
     if amount < MIN_STARS or amount > MAX_STARS:
         raise ValueError(f"Количество должно быть от {MIN_STARS:,} до {MAX_STARS:,} звезд")
 
+    if not user.username:
+        raise ValueError("Для автоматической выдачи Stars у Telegram-аккаунта должен быть установлен @username.")
+
     user_id = user.id
-    username = f"@{user.username}" if user.username else user.first_name
-    order_id = f"{user_id}_{int(time.time())}"
+    username = f"@{user.username}"
+    order_id = f"{user_id}_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     total_price = amount * PRICE_PER_STAR_RUB
 
     order = {
         "order_id": order_id,
         "user_id": user_id,
         "username": username,
+        "recipient": user.username,
         "amount": amount,
         "price_per_star": PRICE_PER_STAR_RUB,
         "total_price": total_price,
         "currency": "RUB",
-        "status": "pending",
+        "status": "pending_payment",
         "created_at": datetime.now().isoformat(),
     }
+
+    payment, error = create_platega_payment(order)
+    if error:
+        raise RuntimeError(error)
+
+    order["platega_transaction_id"] = payment["transaction_id"]
+    order["payment_url"] = payment["payment_url"]
     orders_data["orders"].append(order)
     orders_data["users"].setdefault(str(user_id), {}).setdefault("orders", []).append(order_id)
     save_orders()
 
     text = (
         f"⭐ *Заказ #{order_id}*\n\n"
-        f"👤 *Покупатель:* {username}\n"
+        f"👤 *Получатель:* {username}\n"
         f"⭐ *Количество:* {amount} звезд\n"
         f"💰 *1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
-        f"💵 *Итого:* {format_price(amount)} {CURRENCY}\n\n"
-        f"📞 *Для оплаты:* @{SUPPORT_USERNAME}"
+        f"💵 *К оплате:* {format_price(amount)} {CURRENCY}\n\n"
+        "После подтверждения оплаты Stars будут выданы автоматически."
     )
     keyboard = types.InlineKeyboardMarkup()
-    keyboard.add(types.InlineKeyboardButton(text="💳 Перейти к оплате", url=f"https://t.me/{SUPPORT_USERNAME}?start=order_{order_id}"))
+    keyboard.add(types.InlineKeyboardButton(text="💳 Оплатить через Platega", url=payment["payment_url"]))
     keyboard.add(types.InlineKeyboardButton(text="📋 Статус", callback_data=f"status_{order_id}"))
     bot.send_message(user_id, text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+def issue_stars_after_payment(order: dict):
+    if order.get("status") in {"processing", "completed"} and order.get("fragment_transaction_id"):
+        return
+    if not FRAGMENT_API_KEY:
+        print("[fragment] FRAGMENT_API_KEY is not configured")
+        return
+
+    recipient = order.get("recipient") or str(order.get("username", "")).lstrip("@")
+    quantity = int(order.get("amount", 0))
+    if not recipient or quantity < MIN_STARS:
+        print("[fragment] invalid recipient or quantity")
+        return
+
+    payload = {
+        "product_type": "stars",
+        "recipient": recipient,
+        "quantity": str(quantity),
+        "payment_method": FRAGMENT_PAYMENT_METHOD,
+        "idempotency_key": order["order_id"],
+    }
+    request = urllib.request.Request(
+        f"{FRAGMENT_API_URL.rstrip('/')}/api/purchase",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"X-API-Key": FRAGMENT_API_KEY, "Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    order["status"] = "processing"
+    save_orders()
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        order["fragment_transaction_id"] = data.get("transaction_id")
+        order["fragment_status"] = data.get("status", "pending")
+        if data.get("status") == "completed":
+            order["status"] = "completed"
+        save_orders()
+        try:
+            bot.send_message(order["user_id"], f"✅ Оплата подтверждена. Выдаём {quantity} ⭐ на {order['username']}.")
+        except Exception:
+            pass
+        print(f"[fragment] purchase created for {order['order_id']}: {data}")
+    except urllib.error.HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="replace")
+        order["status"] = "paid"
+        order["fragment_error"] = f"HTTP {exc.code}: {details[:500]}"
+        save_orders()
+        print(f"[fragment] HTTP {exc.code}: {details[:500]}")
+    except Exception as exc:
+        order["status"] = "paid"
+        order["fragment_error"] = str(exc)
+        save_orders()
+        print(f"[fragment] error: {exc}")
 
 
 def get_main_keyboard():
@@ -168,10 +299,9 @@ def start_handler(message):
 def buy_stars_handler(call):
     text = (
         "⭐ *Покупка звёзд*\n\n"
-        f"💰 *Цена за 1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
-        "\n"
+        f"💰 *Цена за 1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n\n"
         f"— Минимум: {MIN_STARS:,} звезд\n"
-        f"— Максимум (за один заказ): {MAX_STARS:,} звезд\n\n"
+        f"— Максимум: {MAX_STARS:,} звезд\n\n"
         "🔎 Выберите количество звёзд для покупки:"
     )
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=get_stars_keyboard(), parse_mode="Markdown")
@@ -189,10 +319,7 @@ def profile_handler(call):
 @bot.callback_query_handler(func=lambda call: call.data == "reviews")
 def reviews_handler(call):
     fetch_reviews_from_channel()
-    if reviews_cache:
-        avg = sum(r.get("rating", 0) for r in reviews_cache) / len(reviews_cache)
-    else:
-        avg = 0
+    avg = sum(r.get("rating", 0) for r in reviews_cache) / len(reviews_cache) if reviews_cache else 0
     text = f"⭐ *Отзывы наших клиентов*\n\n📊 *Всего отзывов:* {len(reviews_cache)}\n⭐ *Средняя оценка:* {avg:.1f}/5.0\n\n_Полные отзывы открываются в WebApp._"
     keyboard = types.InlineKeyboardMarkup()
     keyboard.add(types.InlineKeyboardButton(text="💬 Открыть отзывы", web_app=types.WebAppInfo(url=REVIEWS_WEBAPP_URL)))
@@ -218,7 +345,6 @@ def reviews_filter_handler(call):
 
 @bot.message_handler(func=lambda message: message.chat.id in pending_custom_amount)
 def custom_amount_message_handler(message):
-    user_id = message.from_user.id
     pending_custom_amount.discard(message.chat.id)
     raw = (message.text or "").strip().replace(" ", "").replace(",", ".")
     try:
@@ -233,7 +359,10 @@ def custom_amount_message_handler(message):
     if amount < MIN_STARS or amount > MAX_STARS:
         bot.send_message(message.chat.id, f"❌ Допустимо от {MIN_STARS:,} до {MAX_STARS:,} звезд.")
         return
-    create_order_for_user(message.from_user, amount)
+    try:
+        create_order_for_user(message.from_user, amount)
+    except Exception as exc:
+        bot.send_message(message.chat.id, f"❌ {exc}")
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("buy_"))
@@ -242,21 +371,19 @@ def buy_handler(call):
     if value == "custom":
         pending_custom_amount.add(call.message.chat.id)
         bot.answer_callback_query(call.id)
-        bot.send_message(
-            call.message.chat.id,
-            f"⚙️ Введите количество звезд от {MIN_STARS:,} до {MAX_STARS:,}.\n\n💰 Цена: {PRICE_PER_STAR_RUB:.2f} {CURRENCY} за 1 ⭐\n💵 Например: 750 → {format_price(750)} {CURRENCY}"
-        )
+        bot.send_message(call.message.chat.id, f"⚙️ Введите количество звезд от {MIN_STARS:,} до {MAX_STARS:,}.\n\n💰 Цена: {PRICE_PER_STAR_RUB:.2f} {CURRENCY} за 1 ⭐\n💵 Например: 750 → {format_price(750)} {CURRENCY}")
         return
     try:
         amount = int(value)
+        if amount < MIN_STARS or amount > MAX_STARS:
+            raise ValueError
+        create_order_for_user(call.from_user, amount)
+        bot.answer_callback_query(call.id)
     except ValueError:
-        bot.answer_callback_query(call.id, "Некорректное количество", show_alert=True)
-        return
-    if amount < MIN_STARS or amount > MAX_STARS:
         bot.answer_callback_query(call.id, f"Допустимо от {MIN_STARS:,} до {MAX_STARS:,}", show_alert=True)
-        return
-    create_order_for_user(call.from_user, amount)
-    bot.answer_callback_query(call.id)
+    except Exception as exc:
+        bot.answer_callback_query(call.id, "Не удалось создать оплату", show_alert=True)
+        bot.send_message(call.message.chat.id, f"❌ {exc}")
 
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
@@ -275,19 +402,23 @@ def order_status_handler(call):
     if int(order.get("user_id", -1)) != int(call.from_user.id):
         bot.answer_callback_query(call.id, "❌ Это не ваш заказ", show_alert=True)
         return
-    status_emoji = {"pending": "⏳", "paid": "💰", "processing": "⚙️", "completed": "✅", "cancelled": "❌"}
-    status_text = {"pending": "Ожидает оплаты", "paid": "Оплачен", "processing": "В обработке", "completed": "Выполнен", "cancelled": "Отменён"}
+    status_emoji = {"pending_payment": "💳", "paid": "✅", "processing": "⚙️", "completed": "✅", "cancelled": "❌"}
+    status_text = {"pending_payment": "Ожидает оплаты", "paid": "Оплачен, выдаём Stars", "processing": "Выдаём Stars", "completed": "Выполнен", "cancelled": "Отменён"}
     text = (
         f"📋 *Статус заказа #{order_id}*\n\n"
         f"{status_emoji.get(order['status'], '❓')} *Статус:* {status_text.get(order['status'], 'Неизвестно')}\n"
         f"⭐ *Количество:* {order['amount']} звезд\n"
-        f"💰 *1 ⭐:* {float(order.get('price_per_star', PRICE_PER_STAR_RUB)):.2f} {CURRENCY}\n"
+        f"💰 *1 ⭐:* {PRICE_PER_STAR_RUB:.2f} {CURRENCY}\n"
         f"💵 *Итого:* {format_price(int(order['amount']))} {CURRENCY}\n"
         f"📅 *Создан:* {order['created_at']}\n"
     )
-    if order["status"] == "completed":
-        text += "\n✅ *Звёзды успешно выданы!*\n"
+    if order.get("payment_url"):
+        text += "\n💳 Нажмите кнопку ниже, чтобы оплатить.\n"
+    if order.get("status") == "completed":
+        text += "\n✅ *Stars успешно выданы!*\n"
     keyboard = types.InlineKeyboardMarkup()
+    if order.get("payment_url") and order.get("status") == "pending_payment":
+        keyboard.add(types.InlineKeyboardButton(text="💳 Оплатить", url=order["payment_url"]))
     keyboard.add(types.InlineKeyboardButton(text="🔄 Обновить", callback_data=f"status_{order_id}"))
     keyboard.add(types.InlineKeyboardButton(text="↩️ Назад", callback_data="buy_stars"))
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=keyboard, parse_mode="Markdown")
